@@ -15,10 +15,11 @@ namespace AnimeSlice
         public bool SliceDismember = true;
         public bool SpinSlice = true;
         public string ActivationButton = "Alt Use";
+        public bool Toggle = false;
         public override void OnItemLoaded(Item item)
         {
             base.OnItemLoaded(item);
-            item.gameObject.AddComponent<AnimeSliceComponent>().Setup(SliceDamage, SliceDismember, ActivationButton, SpinSlice);
+            item.gameObject.AddComponent<AnimeSliceComponent>().Setup(SliceDamage, SliceDismember, ActivationButton, SpinSlice, Toggle);
         }
     }
     public class AnimeSliceComponent : MonoBehaviour
@@ -27,13 +28,13 @@ namespace AnimeSlice
         List<RagdollPart> parts = new List<RagdollPart>();
         List<Damager> damagers = new List<Damager>();
         Dictionary<Collider, bool> colliders = new Dictionary<Collider, bool>();
-        SpellTelekinesis telekinesis;
         float damage;
         bool dismember;
         bool spin;
         bool active = false;
         Interactable.Action onButton;
         Interactable.Action offButton;
+        bool toggle;
         public void Awake()
         {
             item = GetComponent<Item>();
@@ -43,6 +44,8 @@ namespace AnimeSlice
             item.OnGrabEvent += Item_OnGrabEvent;
             item.OnTelekinesisReleaseEvent += Item_OnTelekinesisReleaseEvent;
             item.OnTelekinesisGrabEvent += Item_OnTelekinesisGrabEvent;
+            item.OnTKSpinStart += Item_OnTKSpinStart;
+            item.OnTKSpinEnd += Item_OnTKSpinEnd;
             foreach(Damager damager in item.GetComponentsInChildren<Damager>())
             {
                 if(damager.data.damageModifierData.damageType == DamageType.Slash || damager.data.damageModifierData.damageType == DamageType.Pierce)
@@ -58,7 +61,23 @@ namespace AnimeSlice
             }
         }
 
-        public void Setup(float sliceDamage = 20f, bool sliceDismember = true, string activationButton = "Alt Use", bool sliceSpin = true)
+        private void Item_OnTKSpinEnd(Handle held, bool spinning, EventTime eventTime)
+        {
+            if (eventTime == EventTime.OnStart && active && spin)
+            {
+                Deactivate();
+            }
+        }
+
+        private void Item_OnTKSpinStart(Handle held, bool spinning, EventTime eventTime)
+        {
+            if (eventTime == EventTime.OnStart && !active && spin)
+            {
+                Activate();
+            }
+        }
+
+        public void Setup(float sliceDamage = 20f, bool sliceDismember = true, string activationButton = "Alt Use", bool sliceSpin = true, bool toggleSlice = false)
         {
             damage = sliceDamage;
             dismember = sliceDismember;
@@ -78,17 +97,16 @@ namespace AnimeSlice
                 onButton = Interactable.Action.AlternateUseStart;
                 offButton = Interactable.Action.AlternateUseStop;
             }
+            toggle = toggleSlice;
         }
 
         private void Item_OnTelekinesisReleaseEvent(Handle handle, SpellTelekinesis teleGrabber)
         {
-            telekinesis = null;
             Deactivate();
         }
 
         private void Item_OnTelekinesisGrabEvent(Handle handle, SpellTelekinesis teleGrabber)
         {
-            telekinesis = teleGrabber;
             Deactivate();
         }
 
@@ -104,24 +122,24 @@ namespace AnimeSlice
 
         private void Item_OnHeldActionEvent(RagdollHand ragdollHand, Handle handle, Interactable.Action action)
         {
-            if (action == onButton)
+            if (!toggle)
             {
-                Activate();
+                if (action == onButton)
+                {
+                    Activate();
+                }
+                else if (action == offButton)
+                {
+                    Deactivate();
+                }
             }
-            else if (action == offButton)
+            else
             {
-                Deactivate();
-            }
-        }
-        public void FixedUpdate()
-        {
-            if (telekinesis != null && telekinesis.spinMode && !active && spin)
-            {
-                Activate();
-            }
-            else if (telekinesis != null && !telekinesis.spinMode && active && spin)
-            {
-                Deactivate();
+                if(action == onButton)
+                {
+                    if (!active) Activate();
+                    else Deactivate();
+                }
             }
         }
         public void Activate()
@@ -129,6 +147,10 @@ namespace AnimeSlice
             foreach(Collider collider in colliders.Keys)
             {
                 collider.isTrigger = true;
+            }
+            foreach (Damager damager in damagers)
+            {
+                damager.UnPenetrateAll();
             }
             active = true;
         }
@@ -156,6 +178,24 @@ namespace AnimeSlice
             {
                 if (part?.ragdoll?.creature?.gameObject?.activeSelf == true && part != null && !part.isSliced && part?.ragdoll?.creature != Player.currentCreature)
                 {
+                    part.gameObject.SetActive(true);
+                    CollisionInstance instance = new CollisionInstance(new DamageStruct(DamageType.Slash, damage))
+                    {
+                        targetCollider = part.colliderGroup.colliders[0],
+                        targetColliderGroup = part.colliderGroup,
+                        sourceCollider = item.colliderGroups[0].colliders[0],
+                        sourceColliderGroup = item.colliderGroups[0],
+                        casterHand = item.lastHandler.caster,
+                        impactVelocity = item.rb.velocity,
+                        contactPoint = part.transform.position,
+                        contactNormal = -item.rb.velocity
+                    };
+                    instance.damageStruct.hitRagdollPart = part;
+                    if (item.colliderGroups[0].imbue.energy > 0 && item.colliderGroups[0].imbue is Imbue imbue)
+                    {
+                        imbue.spellCastBase.OnImbueCollisionStart(instance);
+                        yield return null;
+                    }
                     if (part.sliceAllowed && dismember)
                     {
                         part.ragdoll.TrySlice(part);
@@ -163,12 +203,7 @@ namespace AnimeSlice
                             part.ragdoll.creature.Kill();
                         yield return null;
                     }
-                    if (!part.ragdoll.creature.isKilled)
-                    {
-                        CollisionInstance instance = new CollisionInstance(new DamageStruct(DamageType.Slash, damage));
-                        instance.damageStruct.hitRagdollPart = part;
-                        part.ragdoll.creature.Damage(instance);
-                    }
+                    part.ragdoll.creature.Damage(instance);
                 }
             }
             parts.Clear();
@@ -176,17 +211,12 @@ namespace AnimeSlice
         }
         public void OnTriggerEnter(Collider c)
         {
-            if (item.holder == null && c.GetComponentInParent<ColliderGroup>() != null)
+            if (item.holder == null && c.GetComponentInParent<ColliderGroup>() is ColliderGroup group && group.collisionHandler.isRagdollPart)
             {
-                ColliderGroup enemy = c.GetComponentInParent<ColliderGroup>();
-                if (enemy?.collisionHandler?.ragdollPart != null && enemy?.collisionHandler?.ragdollPart?.ragdoll?.creature != Player.currentCreature)
+                group.collisionHandler.ragdollPart.gameObject.SetActive(true);
+                if (!parts.Contains(group.collisionHandler.ragdollPart))
                 {
-                    RagdollPart part = enemy.collisionHandler.ragdollPart;
-                    part.gameObject.SetActive(true);
-                    if (part.ragdoll.creature != Player.currentCreature && parts.Contains(part) == false)
-                    {
-                        parts.Add(part);
-                    }
+                    parts.Add(group.collisionHandler.ragdollPart);
                 }
             }
         }
