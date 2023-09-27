@@ -28,6 +28,7 @@ namespace AnimeSlice
         List<RagdollPart> parts = new List<RagdollPart>();
         List<Damager> damagers = new List<Damager>();
         Dictionary<Collider, bool> colliders = new Dictionary<Collider, bool>();
+        Dictionary<Breakable, float> breakables = new Dictionary<Breakable, float>();
         float damage;
         bool dismember;
         bool spin;
@@ -174,6 +175,17 @@ namespace AnimeSlice
         }
         public IEnumerator AnimeSlice()
         {
+            foreach (Breakable breakable in breakables.Keys)
+            {
+                --breakable.hitsUntilBreak;
+                if (breakable.canInstantaneouslyBreak)
+                    breakable.hitsUntilBreak = 0;
+                breakable.onTakeDamage?.Invoke(breakables[breakable]);
+                if (breakable.IsBroken || breakable.hitsUntilBreak > 0)
+                    continue;
+                breakable.Break();
+            }
+            breakables.Clear();
             foreach (RagdollPart part in parts)
             {
                 if (part?.ragdoll?.creature?.gameObject?.activeSelf == true && part != null && !part.isSliced && part?.ragdoll?.creature != Player.currentCreature)
@@ -186,9 +198,9 @@ namespace AnimeSlice
                         sourceCollider = item.colliderGroups[0].colliders[0],
                         sourceColliderGroup = item.colliderGroups[0],
                         casterHand = item.lastHandler.caster,
-                        impactVelocity = item.rb.velocity,
+                        impactVelocity = item.physicBody.velocity,
                         contactPoint = part.transform.position,
-                        contactNormal = -item.rb.velocity
+                        contactNormal = -item.physicBody.velocity
                     };
                     instance.damageStruct.hitRagdollPart = part;
                     if (item.colliderGroups[0].imbue.energy > 0 && item.colliderGroups[0].imbue is Imbue imbue)
@@ -211,6 +223,14 @@ namespace AnimeSlice
         }
         public void OnTriggerEnter(Collider c)
         {
+            if (item.holder == null && c.GetComponentInParent<Breakable>() is Breakable breakable)
+            {
+                if (!breakables.ContainsKey(breakable) || (breakables.ContainsKey(breakable) && item.physicBody.velocity.sqrMagnitude > breakables[breakable]))
+                {
+                    breakables.Remove(breakable);
+                    breakables.Add(breakable, item.physicBody.velocity.sqrMagnitude);
+                }
+            }
             if (item.holder == null && c.GetComponentInParent<ColliderGroup>() is ColliderGroup group && group.collisionHandler.isRagdollPart)
             {
                 group.collisionHandler.ragdollPart.gameObject.SetActive(true);
